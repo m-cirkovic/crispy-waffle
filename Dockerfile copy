@@ -1,0 +1,105 @@
+FROM python:3.11-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    build-base \
+    git \
+    libpq-dev \
+    gcc \
+    musl-dev \
+    python3-dev \
+    openssl-dev \
+    autoconf \
+    automake \
+    libtool \
+    pkgconfig \
+    cython
+
+WORKDIR /build
+
+# Copy and build libsecp256k1
+COPY ./crypto-dbpoe /build/crypto-dbpoe/
+RUN cd /build/crypto-dbpoe && \
+    ./autogen.sh && \
+    ./configure --enable-module-recovery && \
+    make && \
+    make install && \
+    ldconfig /usr/local/lib || true  # ldconfig might not exist on Alpine
+
+# Set up environment variables
+ENV CFLAGS="-I/build/crypto-dbpoe/include -I/usr/local/include" \
+    LDFLAGS="-L/usr/local/lib" \
+    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+# Set up Python package structure
+RUN mkdir -p /build/common/common/u2sso
+
+# Copy u2sso module files
+COPY ./common/common/u2sso /build/common/common/u2sso/
+COPY setup_u2sso.py /build/
+
+# Debug: Show environment and files
+RUN echo "Environment:" && env && \
+    echo "\nContents of /build:" && ls -la /build && \
+    echo "\nContents of /build/common/common/u2sso:" && ls -la /build/common/common/u2sso && \
+    echo "\nContents of /usr/local/lib:" && ls -la /usr/local/lib
+
+# Install build requirements
+RUN pip install --upgrade pip setuptools wheel  --no-cache-dir && \
+    pip install cython 
+
+# Build u2sso module
+RUN cd /build && \
+    python3 setup_u2sso.py build_ext --inplace --verbose 2>&1 | tee build.log
+
+FROM python:3.11-alpine
+
+ARG component
+ARG poetry_dependency_groups
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    libpq \
+    libstdc++ \
+    openssl \
+    gcc \
+    musl-dev \
+    python3-dev \
+    postgresql-dev
+
+WORKDIR /app
+
+# Copy built libraries and Python files
+COPY --from=builder /usr/local/lib/libsecp256k1.so* /usr/lib/
+COPY --from=builder /build/common/common/u2sso/*.so /app/common/common/u2sso/
+COPY --from=builder /build/build.log /app/build.log
+
+# Install Python dependencies
+RUN pip install --upgrade pip setuptools
+RUN pip install poetry --no-cache-dir
+
+# Copy dependencies
+COPY ./poetry.lock .
+COPY ./pyproject.toml .
+
+# Set up common module
+RUN mkdir -p ./common/common/
+RUN touch ./common/common/__init__.py
+COPY ./common/*.toml common/
+
+# Create and activate venv
+RUN python -m venv /app/.venv
+RUN poetry config virtualenvs.create false && \
+    poetry install --no-root --only ${poetry_dependency_groups}
+
+# Copy application files
+COPY ./${component}/ ${component}
+COPY ./common/ common/
+COPY ./${component}/main.py main.py
+
+# Create non-root user
+RUN addgroup -S APPGROUP && adduser -S APPUSER -G APPGROUP
+USER APPUSER
+
+ENTRYPOINT ["/app/.venv/bin/uvicorn", "main:app"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--forwarded-allow-ips", "*"]
