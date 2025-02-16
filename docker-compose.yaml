@@ -7,6 +7,8 @@ services:
     depends_on:
       db_issuer:
         condition: service_healthy
+      db_identity:
+        condition: service_healthy
     build: 
       dockerfile: ./Dockerfile
       context: ./
@@ -36,6 +38,7 @@ services:
         "--ssl-certfile=./cert/rsa_public.pem",
         "--forwarded-allow-ips", "*"]
     environment:
+     - DB_CONNECTION_IDENTITY=postgresql://postgres:mysecretpassword@db_identity/registry
      - ENABLE_DEBUG_MODE=True
      - REGISTRY_BASE_URL=https://registry_base
      - REGISTRY_BASE_API_KEY=${REGISTRY_BASE_API_KEY}
@@ -55,17 +58,19 @@ services:
      - HSM_LABEL=${HSM_LABEL}
      - HSM_SIGNING_ALGORITHM=${HSM_SIGNING_ALGORITHM}
      - APP_NAME=issuer
+     - REGISTRY_IDENTITY_API_KEY=${REGISTRY_IDENTITY_API_KEY}
   
   verifier:
     depends_on:
       - registry_base
       - registry_revocation
+      - db_identity
     build: 
       dockerfile: ./Dockerfile
       context: ./
       args:
         component: verifier
-        poetry_dependency_groups: main,asgi,comms,jwt,redis,dif
+        poetry_dependency_groups: main,asgi,comms,jwt,redis,dif,database
     networks:
       - oid4vc_local
     ports: 
@@ -83,6 +88,7 @@ services:
         "--ssl-certfile=./cert/rsa_public.pem",
         "--forwarded-allow-ips", "*"]
     environment:
+     - DB_CONNECTION_IDENTITY=postgresql://postgres:mysecretpassword@db_identity/registry
      - ENABLE_DEBUG_MODE=True
      - REGISTRY_BASE_URL=https://registry_base/issuer
      - REGISTRY_REVOCATION_URL=https://registry_revocation/issuer
@@ -90,6 +96,7 @@ services:
      - API_KEY=tergum_dev_key
      - LOG_LEVEL=${LOG_LEVEL}
      - APP_NAME=verifier
+     - REGISTRY_IDENTITY_API_KEY=${REGISTRY_IDENTITY_API_KEY}
 
   admin:
     depends_on:
@@ -184,6 +191,8 @@ services:
       - ./cert/registry_identity:/app/cert
       - ./registry_identity:/app/registry_identity
       - ./common:/app/common
+      - ./registry_identity/alembic:/app/alembic
+      - ./registry_identity/alembic.ini:/app/alembic.ini
     environment:
      - ENABLE_DEBUG_MODE=True
      - DB_CONNECTION=postgresql://postgres:mysecretpassword@db_identity/registry
@@ -265,6 +274,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=mysecretpassword
       - POSTGRES_DB=registry
+      - SQLALCHEMY_DATABASE_SCHEMA=public
     volumes:
       - registry_identity_data:/var/lib/postgresql/data
     healthcheck:
@@ -314,12 +324,15 @@ services:
 # ######################
 
   wallet:
+    depends_on:
+      - registry_identity
+      - db_identity
     build: 
       dockerfile: ./Dockerfile
       context: ./
       args:
         component: wallet
-        poetry_dependency_groups: main,asgi,comms,jwt,html,hsm
+        poetry_dependency_groups: main,asgi,comms,jwt,html,hsm,database
     networks:
       - oid4vc_local
     ports: 
@@ -330,8 +343,10 @@ services:
       - ./common:/app/common
       - ./wallet_data:/app/wallet_data:rw
     environment:
+      - DB_CONNECTION_IDENTITY=postgresql://postgres:mysecretpassword@db_identity/registry
       - ENABLE_DEBUG_MODE=True
       - APP_NAME=wallet
+      - REGISTRY_IDENTITY_API_KEY=${REGISTRY_IDENTITY_API_KEY}
     command: 
       [
         "--host", "0.0.0.0",

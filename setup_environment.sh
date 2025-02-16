@@ -84,7 +84,7 @@ generate_local_dev_certs() {
 generate_all_certs() {
     if [ ! -d "$DIR/" ]; then
         mkdir $DIR   
-        for d in admin issuer verifier registry_base registry_revocation wallet registry_identity
+        for d in admin issuer verifier registry_base registry_revocation registry_identity wallet registry_identity
         do
             generate_local_dev_certs $d    
         done
@@ -162,7 +162,17 @@ start_admin_containers() {
     echo "Waiting for startup to be complete"
     wait_for_liveness $REGISTRY_BASE_SERVICE_URL
     wait_for_liveness $REGISTRY_REVOCATION_SERVICE_URL
+    wait_for_liveness $REGISTRY_IDENTITY_SERVICE_URL
     echo "Done waiting. Ready or not here I come!"
+
+    echo "Running identity database migrations..."
+    docker compose exec -T registry_identity /app/.venv/bin/alembic upgrade head
+
+    # Ensure the database schema is updated
+    echo "Updating database schema..."
+    docker compose exec -T registry_identity /app/.venv/bin/alembic revision --autogenerate -m "Change id_value and id33_value to bytea"
+    docker compose exec -T registry_identity /app/.venv/bin/alembic upgrade head
+    echo "Database schema updated."
 }
 
 create_status_list_config() {

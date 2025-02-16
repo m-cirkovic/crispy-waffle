@@ -67,6 +67,7 @@ RUN apt-get update && apt-get install -y \
     libpq5 \
     libssl3 \
     opensc \
+    softhsm2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -9,6 +9,10 @@ from pydantic import BaseModel
 import httpx
 from common.u2sso import u2sso
 import fastapi
+import hashlib
+from urllib.parse import urljoin
+import os
+from functools import lru_cache
 
 TAG = "U2SSO"
 
@@ -16,8 +20,11 @@ router = fastapi.APIRouter(tags=[TAG])
 
 _logger = logging.getLogger(__name__)
 
+SERVICE_NAME = "Verifier"
+
 REGISTRY_URL = "https://registry_identity"
 API_KEY = "tergum_dev_key"
+
 
 class AuthChallenge(BaseModel):
     challenge: bytes
@@ -31,6 +38,20 @@ class Account(BaseModel):
     user_ip: str
     registered: bool = False
     proof: Optional[str] = None
+
+class Settings:
+    def __init__(self):
+        self.registry_identity_url = "https://registry_identity:443"
+        self.registry_identity_api_key = os.getenv("REGISTRY_IDENTITY_API_KEY")
+        if not self.registry_identity_api_key:
+            raise ValueError("REGISTRY_IDENTITY_API_KEY environment variable is not set")
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+settings = get_settings()
+headers = {"X-API-Key": settings.registry_identity_api_key}
 
 registered_spk: List[Account] = []
 reg_auth_challenges: List[AuthChallenge] = []
@@ -67,6 +88,38 @@ async def get_all_active_ids(session) -> List[tuple[int, int]]:
                 )
                 active_ids.append(tuple(id_response.json()))
         return active_ids
+    
+@router.get("/servicename")
+async def get_service_name() -> str:
+    sha = hashlib.sha256()
+    sha.update(SERVICE_NAME.encode()) 
+    hex_result = sha.hexdigest()
+    url = urljoin(settings.registry_identity_url, "identity/service")
+    params = {"name": hex_result}
+    async with httpx.AsyncClient(verify=False) as client:
+        response = await client.post(url=url, headers=headers, params=params)
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+    return hex_result
+
+@router.get("/challenge")
+async def get_challenge(request: Request) -> bytes:
+    ip_address = request.headers.get("X-Real-Ip")
+    if not ip_address:
+        ip_address = request.headers.get("X-Forwarded-For")
+    if not ip_address:
+        ip_address = request.client.host
+
+    # Check if a challenge already exists for this IP address
+    for auth_challenge in reg_auth_challenges:
+        if auth_challenge.user_ip == ip_address:
+            return auth_challenge.challenge
+
+    # Create a new challenge if none exists for this IP address
+    challenge = u2sso.create_challenge()
+    hex_challenge = challenge.hex()
+    reg_auth_challenges.append(AuthChallenge(challenge=hex_challenge, user_ip=ip_address))
+    return hex_challenge
 
 @router.post("/signup")
 async def signup(
