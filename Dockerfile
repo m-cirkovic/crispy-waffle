@@ -64,10 +64,12 @@ ARG install_softhsm
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
+    build-essential \
     libpq5 \
     libssl3 \
     opensc \
     softhsm2 \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -84,9 +86,12 @@ ENV COMPONENT=$component
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV PYTHONPATH=/app/common
 
+COPY setup_u2sso.py .
 COPY ./${component}/ ${component}
 COPY ./common/ common/
 COPY ./${component}/main.py main.py
+
+RUN python setup_u2sso.py build_ext --inplace
 
 EXPOSE 8080/tcp
 
